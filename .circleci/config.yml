@@ -30,7 +30,7 @@ jobs:
           command: |
             echo "Validating COMPLIANT Terraform resources against policies..."
             # Create JSON representation of compliant S3 bucket
-            cat > terraform-resources.json << 'JSON'
+            cat > terraform-resources.json \<< 'JSON'
             [
               {
                 "resource_type": "aws_s3_bucket",
@@ -143,7 +143,7 @@ jobs:
             mkdir -p terraform
             cd terraform/
             # Create compliant version with all required security controls
-            cat > main-compliant.tf << 'TERRAFORM'
+            cat > main-compliant.tf \<< 'TERRAFORM'
             provider "aws" {
               region = var.aws_region
             }
