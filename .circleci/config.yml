@@ -1,9 +1,10 @@
+
 version: 2.1
 
 jobs:
   policy-validation:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/python:3.9
     steps:
       - checkout
       
@@ -28,64 +29,76 @@ jobs:
             else
               echo "No tests directory found, skipping policy tests"
             fi
-            echo "Policy tests completed successfully!"
+            echo "Policy tests passed!"
       
       - run:
-          name: Validate Sample Resource
+          name: Validate Terraform Configuration
           command: |
-            # Create a sample S3 bucket configuration (compliant)
-            cat > compliant-s3.json \<< 'JSON'
-            {
-              "resource_type": "aws_s3_bucket",
-              "bucket": "compliant-bucket",
-              "server_side_encryption_configuration": {
-                "rule": {
-                  "apply_server_side_encryption_by_default": {
-                    "sse_algorithm": "AES256"
-                  }
-                }
+            echo "Validating Terraform resources against policies..."
+            
+            # Create JSON representation of our violating S3 bucket
+            cat > terraform-resources.json \<< 'JSON'
+            [
+              {
+                "resource_type": "aws_s3_bucket",
+                "resource_name": "policy_violation_bucket",
+                "bucket": "circleci-lab-violation-bucket-12345"
               },
-              "versioning": {
-                "enabled": true
+              {
+                "resource_type": "aws_s3_bucket_acl",
+                "resource_name": "policy_violation_bucket_acl",
+                "bucket": "circleci-lab-violation-bucket-12345",
+                "acl": "public-read"
               }
-            }
+            ]
             JSON
             
-            # Test compliant resource
-            echo "Testing compliant S3 bucket..."
-            RESULT=$(opa eval -d policies/ -i compliant-s3.json "data.aws.s3.security.deny[x]" --format json)
-            echo "Policy evaluation result: $RESULT"
+            # Validate each resource and track violations
+            TOTAL_VIOLATIONS=0
+            FOUND_VIOLATIONS=false
             
-            if echo "$RESULT" | jq -e '.result | length == 0' > /dev/null; then
-              echo "✅ Compliant resource passed validation"
-            else
-              echo "❌ Compliant resource failed validation"
-              echo "Violations found: $RESULT"
+            # Process each resource individually
+            for i in $(jq -r 'keys | .[]' terraform-resources.json); do
+              resource=$(jq -c ".[$i]" terraform-resources.json)
+              resource_name=$(echo "$resource" | jq -r '.resource_name')
+              
+              echo "Validating resource: $resource_name"
+              
+              # Write resource to temporary file for OPA
+              echo "$resource" > /tmp/resource_$i.json
+              
+              VIOLATIONS=$(opa eval -d policies/ -i /tmp/resource_$i.json "data.aws.s3.security.deny[x]" --format json)
+              WARNINGS=$(opa eval -d policies/ -i /tmp/resource_$i.json "data.aws.s3.security.warn[x]" --format json)
+              
+              # Check if violations exist
+              if echo "$VIOLATIONS" | jq -e '.result | length > 0' > /dev/null 2>&1; then
+                echo "❌ POLICY VIOLATIONS FOUND:"
+                echo "$VIOLATIONS" | jq '.result'
+                echo "VIOLATIONS_FOUND=true" >> /tmp/violations_status
+              elif [ "$VIOLATIONS" != "" ]; then
+                echo "✅ No violations found for this resource"
+              fi
+              
+              # Check if warnings exist
+              if echo "$WARNINGS" | jq -e '.result | length > 0' > /dev/null 2>&1; then
+                echo "⚠️  POLICY WARNINGS:"
+                echo "$WARNINGS" | jq '.result'
+              fi
+              
+              # Clean up temp file
+              rm -f /tmp/resource_$i.json
+            done
+            
+            # Check if any violations were found
+            if [ -f /tmp/violations_status ] && grep -q "VIOLATIONS_FOUND=true" /tmp/violations_status; then
+              echo "Found policy violations in Terraform configuration"
+              echo "❌ Build failed due to policy violations - this is expected!"
               exit 1
-            fi
-            
-            # Create a non-compliant S3 bucket configuration
-            cat > non-compliant-s3.json \<< 'JSON'
-            {
-              "resource_type": "aws_s3_bucket",
-              "bucket": "non-compliant-bucket"
-            }
-            JSON
-            
-            # Test non-compliant resource
-            echo "Testing non-compliant S3 bucket..."
-            VIOLATIONS=$(opa eval -d policies/ -i non-compliant-s3.json "data.aws.s3.security.deny[x]" --format json)
-            echo "Violations result: $VIOLATIONS"
-            
-            if echo "$VIOLATIONS" | jq -e '.result | length > 0' > /dev/null; then
-              echo "✅ Non-compliant resource correctly flagged:"
-              echo "$VIOLATIONS" | jq '.result'
             else
-              echo "❌ Non-compliant resource should have been flagged but wasn't"
-              exit 1
+              echo "✅ No policy violations found"
             fi
 
-  test-aws-connection:
+  deploy-compliant-infrastructure:
     docker:
       - image: cimg/base:stable
     environment:
@@ -94,28 +107,101 @@ jobs:
       - checkout
       
       - run:
-          name: Install AWS CLI
+          name: Install AWS CLI and Terraform
           command: |
+            # Install AWS CLI
             curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
             unzip awscliv2.zip
             sudo ./aws/install
+            
+            # Install Terraform
+            wget https://releases.hashicorp.com/terraform/1.6.0/terraform_1.6.0_linux_amd64.zip
+            unzip terraform_1.6.0_linux_amd64.zip
+            sudo mv terraform /usr/local/bin/
       
       - run:
-          name: Configure OIDC and Test
+          name: Create and Deploy Compliant Infrastructure
           command: |
-            # Replace YOUR_AWS_ACCOUNT_ID with your actual AWS account ID
             export AWS_ROLE_ARN="arn:aws:iam::848928398887:role/CircleCILabRole"
             export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web-identity-token"
             echo $CIRCLE_OIDC_TOKEN > $AWS_WEB_IDENTITY_TOKEN_FILE
             
-            echo "Testing AWS connection..."
-            aws sts get-caller-identity
-            echo "AWS connection successful!"
+            # Create terraform directory if it doesn't exist
+            mkdir -p terraform
+            cd terraform/
+            
+            # Create compliant version
+            cat > main-compliant.tf \<< 'TERRAFORM'
+            provider "aws" {
+              region = var.aws_region
+            }
+            
+            variable "aws_region" {
+              description = "AWS region"
+              type        = string
+              default     = "us-east-1"
+            }
+            
+            resource "aws_s3_bucket" "compliant_bucket" {
+              bucket = "circleci-lab-compliant-${random_string.suffix.result}"
+            }
+            
+            resource "aws_s3_bucket_server_side_encryption_configuration" "compliant_encryption" {
+              bucket = aws_s3_bucket.compliant_bucket.id
+            
+              rule {
+                apply_server_side_encryption_by_default {
+                  sse_algorithm = "AES256"
+                }
+              }
+            }
+            
+            resource "aws_s3_bucket_public_access_block" "compliant_pab" {
+              bucket = aws_s3_bucket.compliant_bucket.id
+              block_public_acls       = true
+              block_public_policy     = true
+              ignore_public_acls      = true
+              restrict_public_buckets = true
+            }
+            
+            resource "aws_s3_bucket_versioning" "compliant_versioning" {
+              bucket = aws_s3_bucket.compliant_bucket.id
+              versioning_configuration {
+                status = "Enabled"
+              }
+            }
+            
+            resource "random_string" "suffix" {
+              length  = 8
+              special = false
+              upper   = false
+            }
+            
+            output "bucket_name" {
+              value = aws_s3_bucket.compliant_bucket.bucket
+            }
+            TERRAFORM
+            
+            echo "Initializing Terraform..."
+            terraform init
+            
+            echo "Planning compliant deployment..."
+            terraform plan -out=tfplan
+            
+            echo "Deploying compliant infrastructure..."
+            terraform apply -auto-approve tfplan
+            
+            echo "✅ Compliant infrastructure deployed successfully!"
+            
+            # Clean up to avoid AWS charges
+            echo "Cleaning up resources..."
+            terraform destroy -auto-approve
+            echo "✅ Resources cleaned up"
 
 workflows:
   security-pipeline:
     jobs:
       - policy-validation
-      - test-aws-connection:
+      - deploy-compliant-infrastructure:
           requires:
             - policy-validation
