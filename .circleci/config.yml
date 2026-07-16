@@ -1,16 +1,35 @@
 version: 2.1
 
 jobs:
-  test:
+  test-aws-connection:
     docker:
       - image: cimg/base:stable
+    environment:
+      AWS_DEFAULT_REGION: us-east-1
     steps:
       - checkout
+      
       - run:
-          name: Hello World
-          command: echo "Hello from CircleCI!"
+          name: Install AWS CLI
+          command: |
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+      
+      - run:
+          name: Configure OIDC and Test AWS Connection
+          command: |
+            # Set up OIDC authentication
+            export AWS_ROLE_ARN="arn:aws:iam::848928398887:role/CircleCILabRole"
+            export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web-identity-token"
+            echo $CIRCLE_OIDC_TOKEN > $AWS_WEB_IDENTITY_TOKEN_FILE
+            
+            # Test AWS connection
+            echo "Testing AWS connection..."
+            aws sts get-caller-identity
+            echo "AWS connection successful!"
 
 workflows:
-  test-workflow:
+  test:
     jobs:
-      - test
+      - test-aws-connection
