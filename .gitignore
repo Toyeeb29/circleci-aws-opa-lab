@@ -1,0 +1,12 @@
+# AWS credentials (never commit these)
+aws-configs/
+*.pem
+*.key
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# OS files
+.DS_Store
