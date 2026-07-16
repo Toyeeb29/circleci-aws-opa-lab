@@ -37,7 +37,7 @@ jobs:
             echo "Validating COMPLIANT Terraform resources against policies..."
             
             # Create JSON representation of compliant S3 bucket
-            cat > terraform-resources.json \<< 'JSON'
+            cat > terraform-resources.json << 'JSON'
             [
               {
                 "resource_type": "aws_s3_bucket",
@@ -147,8 +147,8 @@ jobs:
             
             # Install Terraform (clean install)
             rm -rf terraform*  # Remove any existing terraform files or directories
-            wget https://releases.hashicorp.com/terraform/1.6.0/terraform_1.6.0_linux_amd64.zip
-            unzip -o terraform_1.6.0_linux_amd64.zip
+            wget https://releases.hashicorp.com/terraform/1.6.1/terraform_1.6.1_linux_amd64.zip
+            unzip -o terraform_1.6.1_linux_amd64.zip
             chmod +x terraform
             sudo mv terraform /usr/local/bin/
             
@@ -168,7 +168,7 @@ jobs:
             cd terraform/
             
             # Create compliant version with all required security controls
-            cat > main-compliant.tf \<< 'TERRAFORM'
+            cat > main-compliant.tf << 'TERRAFORM'
             provider "aws" {
               region = var.aws_region
             }
